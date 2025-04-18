@@ -207,6 +207,19 @@ class Image_Replacer {
 				$content = self::replace_image_string( $content, $replacement );
 			}
 		}
+		if ( ! empty( $categories[0] ) && ( $categories[0] === 'video' ) ) {
+			// Video
+			$video_source = '"img":"https://patterns.startertemplatecloud.com/wp-content/uploads/2023/02/Example-A-Roll-Image-scaled.jpg"';
+			$video_source_2 = 'https://patterns.startertemplatecloud.com/wp-content/uploads/2023/02/Example-A-Roll-Image-scaled.jpg';
+			$video_replacements = array(
+				array( 'from' => $video_source, 'to' => '"img":"' . $imgs['a1'] . '"' ),
+				array( 'from' => $video_source_2, 'to' => $imgs['a1'] ),
+			);
+			foreach ( $video_replacements as $replacement ) {
+				// This needs to replace the first instance of the image for each replacement. Have to verify that the needle is in the haystack.
+				$content = self::replace_image_string( $content, $replacement );
+			}
+		}
 
 		if ( ! empty( $categories[0] ) && ( $categories[0] === 'gallery' ) ) {
 			// Gallery
@@ -307,17 +320,37 @@ class Image_Replacer {
 	 * @return string
 	 */
 	private static function get_image_src( $roll, $primary_index, $fallback_index, $fallback_index_2 = null, $fallback_index_3 = null ) {
+		// Check for download sizes first.
+		if ( ! empty( $roll[ $primary_index ]['sizes'][1]['src'] ) && ! empty( $roll[ $primary_index ]['sizes'][1]['name'] ) && $roll[ $primary_index ]['sizes'][1]['name'] === 'download' ) {
+			return $roll[ $primary_index ]['sizes'][1]['src'];
+		}
 		if ( ! empty( $roll[ $primary_index ]['sizes'][0]['src'] ) ) {
 			return $roll[ $primary_index ]['sizes'][0]['src'];
+		}
+		if ( ! empty( $roll[ $fallback_index ]['sizes'][1]['src'] ) && ! empty( $roll[ $fallback_index ]['sizes'][1]['name'] ) && $roll[ $fallback_index ]['sizes'][1]['name'] === 'download' ) {
+			return $roll[ $fallback_index ]['sizes'][1]['src'];
 		}
 		if ( ! empty( $roll[ $fallback_index ]['sizes'][0]['src'] ) ) {
 			return $roll[ $fallback_index ]['sizes'][0]['src'];
 		}
-		if ( ! is_null( $fallback_index_2 ) && ! empty( $roll[ $fallback_index_2 ]['sizes'][0]['src'] ) ) {
-			return $roll[ $fallback_index_2 ]['sizes'][0]['src'];
+		if ( ! is_null( $fallback_index_2 ) ) {
+			if ( ! empty( $roll[ $fallback_index_2 ]['sizes'][1]['src'] ) && ! empty( $roll[ $fallback_index_2 ]['sizes'][1]['name'] ) && $roll[ $fallback_index_2 ]['sizes'][1]['name'] === 'download' ) {
+				return $roll[ $fallback_index_2 ]['sizes'][1]['src'];
+			}
+			if ( ! empty( $roll[ $fallback_index_2 ]['sizes'][0]['src'] ) ) {
+				return $roll[ $fallback_index_2 ]['sizes'][0]['src'];
+			}
 		}
-		if ( ! is_null( $fallback_index_3 ) && ! empty( $roll[ $fallback_index_3 ]['sizes'][0]['src'] ) ) {
-			return $roll[ $fallback_index_3 ]['sizes'][0]['src'];
+		if ( ! is_null( $fallback_index_3 ) ) {
+			if ( ! empty( $roll[ $fallback_index_3 ]['sizes'][1]['src'] ) && ! empty( $roll[ $fallback_index_3 ]['sizes'][1]['name'] ) && $roll[ $fallback_index_3 ]['sizes'][1]['name'] === 'download' ) {
+				return $roll[ $fallback_index_3 ]['sizes'][1]['src'];
+			}
+			if ( ! empty( $roll[ $fallback_index_3 ]['sizes'][0]['src'] ) ) {
+				return $roll[ $fallback_index_3 ]['sizes'][0]['src'];
+			}
+		}
+		if ( ! empty( $roll[0]['sizes'][1]['src'] ) && ! empty( $roll[0]['sizes'][1]['name'] ) && $roll[0]['sizes'][1]['name'] === 'download' ) {
+			return $roll[0]['sizes'][1]['src'];
 		}
 		return ! empty( $roll[0]['sizes'][0]['src'] ) ? $roll[0]['sizes'][0]['src'] : '';
 	}

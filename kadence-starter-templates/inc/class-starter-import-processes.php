@@ -47,9 +47,11 @@ use WC_Product_Attribute;
 use WP_Error;
 use WC_Install;
 use WP_Query;
+use LearnDash_Settings_Section;
 use function sanitize_file_name;
 use function wp_safe_remote_get;
 use function flush_rewrite_rules;
+use function wp_cache_flush;
 use function wp_send_json;
 use function wp_remote_get;
 use function wp_remote_retrieve_body;
@@ -463,6 +465,7 @@ class Starter_Import_Processes {
 		$error_messages = [];
 		if ( ! empty( $available_prompts ) && is_array( $available_prompts ) ) {
 			foreach ( $available_prompts as $context => $prompt ) {
+				error_log( 'get_all_local_ai_items context: ' . $context );
 				// Check local cache.
 				try {
 					$return_data[ $context ] = json_decode( $this->ai_cache->get( $available_prompts[ $context ] ), true );
@@ -472,6 +475,18 @@ class Starter_Import_Processes {
 					if ( is_wp_error( $response ) ) {
 						$has_error = true;
 						$error_messages[] = $response->get_error_message();
+					} else if ( !empty( $response ) && is_string( $response ) && 'error' === $response ) {
+						$error_messages[] = 'Unknown Error';
+						$has_error = true;
+					} else if ( !empty( $response ) && is_string( $response ) && 'not-found' === $response ) {
+						$error_messages[] = 'Not Found';
+						$has_error = true;
+						// Clean up, the token and job are no longer valid.
+						$current_prompts = get_option( 'kb_design_library_prompts', [] );
+						if ( isset( $current_prompts[ $context ] ) ) {
+							unset( $current_prompts[ $context ] );
+							update_option( 'kb_design_library_prompts', $current_prompts );
+						}
 					} else { 
 						$data     = json_decode( $response, true );
 						if ( $response === 'processing' || isset( $data['data']['status'] ) && 409 === $data['data']['status'] ) {
@@ -530,6 +545,9 @@ class Starter_Import_Processes {
 		$response_code = (int) wp_remote_retrieve_response_code( $response );
 		if ( 409 === $response_code ) {
 			return 'processing';
+		}
+		if ( 404 === $response_code ) {
+			return 'not-found';
 		}
 		if ( $this->is_response_code_error( $response ) ) {
 			return 'error';
@@ -1319,7 +1337,7 @@ class Starter_Import_Processes {
 			}
 			// Don't output sections that don't match the goals.
 			if ( $row_condition !== '' && $row_condition !== 'general' ) {
-				if ( $row_condition === 'replace' && ( in_array( 'ecommerce', $goals ) || in_array( 'events', $goals ) || in_array( 'donations', $goals ) || in_array( 'learning', $goals ) || in_array( 'membership', $goals ) || in_array( 'photography', $goals ) || in_array( 'landing', $goals ) ) || in_array( 'blogging', $goals ) ) {
+				if ( $row_condition === 'replace' && ( in_array( 'ecommerce', $goals ) || in_array( 'events', $goals ) || in_array( 'donations', $goals ) || in_array( 'learning', $goals ) || in_array( 'membership', $goals ) || in_array( 'photography', $goals ) || in_array( 'landing', $goals ) || in_array( 'blogging', $goals ) ) ) {
 					continue;
 				} else if ( ! in_array( $row_condition, $goals ) ) {
 					continue;
@@ -1703,6 +1721,7 @@ class Starter_Import_Processes {
 							$page_id = wp_insert_post(
 								array(
 								'post_title'   => 'Courses',
+								'post_name'    => 'our-courses',
 								'post_content' => $page_content,
 								'post_status'  => 'publish',
 								'post_type'    => 'page',
@@ -1710,6 +1729,7 @@ class Starter_Import_Processes {
 							);
 							if ( ! is_wp_error( $page_id ) ) {
 								update_post_meta( $page_id, '_kadence_starter_templates_imported_post', true );
+								update_post_meta( $page_id, '_kad_post_layout', 'normal' );
 								$args = array(
 									'menu-item-title'     => 'Courses',
 									'menu-item-object-id' => $page_id,
@@ -1938,6 +1958,7 @@ class Starter_Import_Processes {
 			}
 		}
 		flush_rewrite_rules();
+		wp_cache_flush();
 		return true;
 	}
 	/**
@@ -2610,6 +2631,22 @@ class Starter_Import_Processes {
 				}
 			}
 		}
+		// Check if sitename is longer then 16 characters.
+		if ( strlen( $site_name ) > 16 ) {
+			$logo_font = \Kadence\kadence()->option( 'brand_typography' );
+			if ( isset( $logo_font['size']['desktop'] ) ) {
+				$size = $logo_font['size']['desktop'];
+				$size_type = ( ! empty( $logo_font['sizeType'] ) ? $logo_font['sizeType'] : 'px' );
+				if ( 'px' === $size_type ) {
+					// Make the size 70% of the original size.
+					$size = $size * 0.7;
+					// Round to the nearest whole number.
+					$size = round( $size );
+					$logo_font['size']['desktop'] = $size;
+					set_theme_mod( 'brand_typography', $logo_font );
+				}
+			}
+		}
 		// Setup Learndash.
 		$this->setup_learndash();
 		// Check permalink settings:
@@ -2619,6 +2656,8 @@ class Starter_Import_Processes {
 		if ( empty( $current_permalink_structure ) ) {
 			update_option( 'permalink_structure', '/%postname%/' );
 		}
+		// Flush Permalinks.
+		flush_rewrite_rules();
 
 		return true;
 	}
@@ -2886,16 +2925,30 @@ class Starter_Import_Processes {
 		$i = 0;
 		$prepared_products = array();
 		foreach ( $products as $product_data ) {
-			$product_json = json_encode( $product_data, true );
-			$product_json = Image_Replacer::replace_images(
-				$product_json,
-				$image_library,
-				[],
-				'',
-				$i,
-				[],
-			);
-			$prepared_products[] = json_decode( $product_json, true );
+			if ( ! empty( $product_data['image'][0]['src'] ) ) {
+				$product_data['image'][0]['src'] = Image_Replacer::replace_images(
+					$product_data['image'][0]['src'],
+					$image_library,
+					[],
+					'',
+					$i,
+					[],
+				);
+			}
+			if ( ! empty( $product_data['gallery_images'] ) ) {
+				// Replace the images in the gallery images.
+				foreach ( $product_data['gallery_images'] as $key => $gallery_image ) {
+					$product_data['gallery_images'][ $key ]['src'] = Image_Replacer::replace_images(
+						$gallery_image['src'],
+						$image_library,
+						[],
+						'',
+						$i,
+						[],
+					);
+				}
+			}
+			$prepared_products[] = $product_data;
 			$i++;
 		}
 		return $prepared_products;
@@ -3324,6 +3377,10 @@ class Starter_Import_Processes {
 		$instance = \LearnDash_Settings_Section::get_section_instance( 'LearnDash_Settings_Theme_LD30' );
 		$instance::set_setting( 'color_primary', 'var(--global-palette1, #0073aa)' );
 		$instance::set_setting( 'color_secondary', 'var(--global-palette2, #215387)' );
+		// Enable login and registration.
+		$instance::set_setting( 'login_mode_enabled', 'yes' );
+		// Focused mode.
+		$instance::set_setting( 'focus_mode_enabled', 'yes' );
 
 		// LearnDash Page Settings.
 		$ld_page_instance = \LearnDash_Settings_Section::get_section_instance( 'LearnDash_Settings_Section_Registration_Pages' );
@@ -3393,6 +3450,8 @@ class Starter_Import_Processes {
 		// Update Lesson Layout.
 		set_theme_mod( 'sfwd-lessons_layout', 'narrow' );
 		set_theme_mod( 'sfwd-lessons_content_style', 'unboxed' );
+		// Make sure anyone can register.
+		update_option( 'users_can_register', 1 );
 
 		return;
 	}
@@ -4168,10 +4227,11 @@ class Starter_Import_Processes {
 							// We need to extract the url from $block['innerHTML'].
 							$image_url = $this->extract_image_url_from_block_content( $block['innerHTML'] );
 							if ( !empty( $image_url ) && isset( $map_urls[ $image_url ] ) ) {
+								$current_id = ( !empty( $block['attrs']['id'] ) ) ? $block['attrs']['id'] : '';
 								$block['innerHTML'] = str_replace( $image_url, $map_urls[ $image_url ]['url'], $block['innerHTML'] );
-								$block['innerHTML'] = str_replace( 'wp-image-' . $block['attrs']['id'], 'wp-image-' . $map_urls[ $image_url ]['id'], $block['innerHTML'] );
+								$block['innerHTML'] = str_replace( 'wp-image-' . $current_id, 'wp-image-' . $map_urls[ $image_url ]['id'], $block['innerHTML'] );
 								$block['innerContent'] = str_replace( $image_url, $map_urls[ $image_url ]['url'], $block['innerContent'] );
-								$block['innerContent'] = str_replace( 'wp-image-' . $block['attrs']['id'], 'wp-image-' . $map_urls[ $image_url ]['id'], $block['innerContent'] );
+								$block['innerContent'] = str_replace( 'wp-image-' . $current_id, 'wp-image-' . $map_urls[ $image_url ]['id'], $block['innerContent'] );
 								$block['attrs']['id'] = absint( $map_urls[ $image_url ]['id'] );
 								$block['attrs']['globalAlt'] = true;
 							}
@@ -4668,7 +4728,9 @@ class Starter_Import_Processes {
 				$response = $this->get_remote_industry_images( $industries, $image_type, $image_sizes );
 			}
 		}
-
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
 		if ( $response === 'error' ) {
 			return new WP_Error( 'invalid_response', 'Invalid response' );
 		}
@@ -4788,16 +4850,18 @@ class Starter_Import_Processes {
 		);
 
 		// Early exit if there was an error.
-		if ( is_wp_error( $response ) || $this->is_response_code_error( $response ) ) {
-			return 'error';
+		if ( is_wp_error( $response ) ) {
+			return $response;
 		}
-
+		if ( $this->is_response_code_error( $response ) ) {
+			return new WP_Error( 'invalid_response', 'Invalid response' );
+		}
 		// Get the image JSON from our response.
 		$contents = wp_remote_retrieve_body( $response );
 
 		// Early exit if there was an error.
 		if ( is_wp_error( $contents ) ) {
-			return 'error';
+			return $contents;
 		}
 
 		return $contents;
@@ -5258,6 +5322,13 @@ class Starter_Import_Processes {
 				'base'  => 'better-wp-security',
 				'slug'  => 'better-wp-security',
 				'path'  => 'better-wp-security/better-wp-security.php',
+				'src'   => 'repo',
+			),
+			'solid-performance' => array(
+				'title' => 'Solid Performance',
+				'base'  => 'solid-performance',
+				'slug'  => 'solid-performance',
+				'path'  => 'solid-performance/solid-performance.php',
 				'src'   => 'repo',
 			),
 		);
